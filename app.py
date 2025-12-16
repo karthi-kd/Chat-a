@@ -1,101 +1,97 @@
-import os
-import base64
+import os, base64
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# ---------------- Load environment variables ----------------
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Initialize OpenAI client
-if not OPENAI_API_KEY:
-    raise ValueError("⚠️ OPENAI_API_KEY not found in environment variables.")
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ---------------- FastAPI setup ----------------
-app = FastAPI(title="AI Builder Backend")
+app = FastAPI()
 
-# Enable CORS (allow all origins for testing)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change to your frontend URL in production
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------- Root ----------------
 @app.get("/")
 def root():
-    return {"status": "AI Builder Backend running"}
+    return {"status": "running"}
 
-# ---------------- Text Chat ----------------
+# -------- CHAT --------
 class ChatRequest(BaseModel):
     message: str
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
     try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
+        r = client.responses.create(
+            model="gpt-4o-mini",
+            max_output_tokens=300,
             input=req.message
         )
-        return {"reply": response.output_text}
+        return {"reply": r.output_text.strip()}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
 
-# ---------------- Image + Text Analysis ----------------
+# -------- IMAGE + TEXT --------
 @app.post("/analyze")
-async def analyze(
-    image: UploadFile = File(...),
-    text: str = Form(...)
-):
+async def analyze(image: UploadFile = File(...), text: str = Form(...)):
     try:
-        image_bytes = await image.read()
-        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        img = await image.read()
+        if len(img) > 1_000_000:
+            raise HTTPException(400, "Image too large")
 
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": text},
-                        {"type": "input_image", "image_base64": image_base64}
-                    ]
-                }
-            ]
+        b64 = base64.b64encode(img).decode()
+
+        r = client.responses.create(
+            model="gpt-4o-mini",
+            max_output_tokens=400,
+            input=[{
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": text[:500]},
+                    {"type": "input_image",
+                     "image_url": f"data:{image.content_type};base64,{b64}"}
+                ]
+            }]
         )
-        return {"result": response.output_text}
+        return {"result": r.output_text.strip()}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
 
-# ---------------- Website Generator ----------------
-class WebsiteRequest(BaseModel):
+# -------- AI APP BUILDER --------
+class AppRequest(BaseModel):
     prompt: str
-    language: str = "html"  # default output language
 
-@app.post("/generate-website")
-async def generate_website(req: WebsiteRequest):
+@app.post("/generate-app")
+async def generate_app(req: AppRequest):
     try:
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Generate a complete {req.language} website for the following description:\n"
-                        f"{req.prompt}\nProvide only the code without explanations."
-                    )
-                }
-            ],
-            max_tokens=3000
+        r = client.responses.create(
+            model="gpt-4o-mini",
+            max_output_tokens=1200,
+            input=f"""
+Create a single-file interactive web app.
+
+Rules:
+- One HTML file
+- Inline CSS & JS
+- Functional
+- No explanations
+- Output only code
+
+App:
+{req.prompt}
+"""
         )
-        return {"website_code": response.choices[0].message.content}
+        return {"code": r.output_text}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
+
 
 
 
